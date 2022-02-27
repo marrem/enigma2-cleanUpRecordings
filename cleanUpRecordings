@@ -1,0 +1,140 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+
+=head1 cleanUpRecordings
+
+Script to clean recordings from OpenATV (Enigma2) STB recordings dir.
+Recordings are removed oldest (based on lexical sort) first, untill
+at least min_space is free on hd device.
+
+Perl on OpenATV (opkg package) is rather limited (no (even core) modules
+present apart from strict, warnings and Config. So everything has to 
+be done in a rather DIY basic way.
+
+Seems that every facility.severity is being forwarded to remote syslogd
+by 'logger'. So 'system('logger', ....' should be enough.
+
+=cut
+
+my $min_space = $ARGV[0];
+
+unless ($min_space) {
+	die "Usage $0 <min_space>\n";
+}
+
+my $recordings_dir = '/hdd/movie';
+my @recordings;
+my $device = '/media/hdd';
+
+system('logger', 'Starting cleanUpRecordings');
+system('logger', "Min space on device $device should be $min_space MB");
+
+chdir ($recordings_dir) or log_and_die("Couldn't cd into $recordings_dir");
+
+my $recording_list_created = 0;
+my $nr = 0;
+my $space = space($device);
+
+while ($space < $min_space) {
+	unless ($recording_list_created) {
+		system('logger', "Space on $device is $space.");
+		system('logger', "This is less than $min_space: Time to clean up");
+		@recordings = sort(get_list_of_recording_basenames($recordings_dir));
+		$recording_list_created = 1;
+	}
+
+	my $recording_to_delete = shift(@recordings);
+	unless ($recording_to_delete) {
+		log_and_die("Oops, Every recording has been deleted... Should not have happened, right?");
+	}	
+	system('logger', "Going to remove $recording_to_delete");
+	$recording_to_delete =~ s/ /\\ /g;
+	$recording_to_delete =~ s/'/\\'/g;
+	system('rm ' . $recording_to_delete . '*') == 0 or log_and_die("$!");
+	my $answer = <STDIN>;
+	$space = space('/media/hdd');
+	system('logger', "Remaining space: $space");
+	$nr ++;
+
+}
+
+system('logger', "Total nr of recordings deleted: $nr");
+system('logger', "Space on $device is $space.");
+system('logger', "cleanUpRecordings finished");
+
+
+=head2 space($fs_root)
+
+  Return space in MB on device containing filesystem with root at $fs_root.
+
+=cut
+
+sub space {
+	my ($fs_root) = @_;
+	my $line_nr = 0;
+	my $space;
+	my @df_lines = `df -m $fs_root 2>&1`;
+	chomp(@df_lines);
+	if ($?) {
+		log_and_die("Couldn't determine available space on filesystem $fs_root, because of 'df' error: \n" . 
+		join("\n", map {"    $_"} @df_lines));
+	}
+	foreach my $df_line (@df_lines) {
+		if ($line_nr == 0) {
+			next;
+		}
+		$space = (split(/\s+/, $df_line))[3];
+		last;
+	} continue {
+		$line_nr ++;
+	}
+	unless (defined($space)) {
+		log_and_die("Couldn't determine available space on filesystem $fs_root: from fourth field of 'df' output\n" .
+		join("\n", map {"    $_"} @df_lines));
+	}
+	return $space;
+}
+
+
+
+
+=head2 get_list_of_recording_basenames($dir)
+
+  Returns a list of recordings.
+  This is a unique list of files with each it's suffix removed.
+
+=cut
+
+sub get_list_of_recording_basenames {
+	my ($dir) = @_;
+	my @files = `ls * 2>&1`;
+	chomp(@files);
+	if ($?) {
+		log_and_die("Error getting file list in dir '$dir'\n" .
+		join("\n", map {"    $_"} @files));
+	}	
+	# Filter only file types associated with recordings:
+	my %basenames =
+	# map {s/\.(eit|ts|ts\.ap|ts\.cuts|ts\.meta|ts\.sc)$//r => 1} grep {/\.(eit|ts|ts\.ap|ts\.cuts|ts\.meta|ts\.sc)$/} @files;
+	map {s/\.(eit|ts.*)$//r => 1} grep {/\.(eit$|ts)/} @files;
+	return keys(%basenames);
+}
+
+
+
+=head2 log_and_die($msg)
+
+	Log $msg to syslog and die with it.
+
+=cut
+
+sub log_and_die {
+	my ($msg) = @_;
+	system('logger', $msg);
+	die "$msg\n";
+}
+
+__END__
+
